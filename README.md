@@ -20,9 +20,9 @@ Luego, en la raíz del proyecto:
 
 ```bash
 npm install
-cp .env.example .env.local   # y completar los valores
-npm run db:migrate            # crea el schema en la base de Supabase
-npm run db:seed               # datos de ejemplo (opcional)
+cp .env.example .env   # y completar los valores (lo leen Next.js y Prisma)
+npm run db:migrate     # crea el schema en la base de Supabase
+npm run db:seed        # datos de ejemplo (opcional)
 npm run dev
 ```
 
