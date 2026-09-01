@@ -1,0 +1,453 @@
+// ---------------------------------------------------------------------------
+// Turnia — schema de base de datos
+// ---------------------------------------------------------------------------
+// Convenciones:
+//   - Todos los instantes (DateTime) se guardan en UTC. El render en
+//     America/Argentina/Buenos_Aires se hace en la capa de aplicación.
+//   - Los horarios recurrentes semanales se guardan como minutos desde la
+//     medianoche LOCAL (Int, 0..1440) + weekday (0=domingo .. 6=sábado,
+//     igual que Date.getDay() en JS).
+//   - Teléfonos siempre en formato E.164 (ej. +5491122334455).
+//   - `Business.whatsappPhone` es UNIQUE global: un mismo número no puede
+//     usarse en dos cuentas (anti-abuso del pool de turnos gratis).
+//
+// PENDIENTE (migración SQL manual, Prisma no lo genera):
+//   Restricción de exclusión para impedir turnos solapados del mismo
+//   profesional. En una migración:
+//
+//     CREATE EXTENSION IF NOT EXISTS btree_gist;
+//     ALTER TABLE "Booking" ADD CONSTRAINT booking_no_overlap
+//       EXCLUDE USING gist (
+//         "professionalId" WITH =,
+//         tstzrange("startAt", "endAt", '[)') WITH &&
+//       ) WHERE ("status" IN ('CONFIRMED', 'COMPLETED', 'NO_SHOW'));
+// ---------------------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ===========================================================================
+// Cuenta / usuario
+// ===========================================================================
+
+/// Espejo del usuario de Supabase Auth. `id` == auth.users.id.
+model User {
+  id        String   @id @db.Uuid
+  email     String   @unique
+  fullName  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  business Business?
+
+  @@map("users")
+}
+
+// ===========================================================================
+// Comercio
+// ===========================================================================
+
+model Business {
+  id      String @id @default(uuid()) @db.Uuid
+  ownerId String @unique @db.Uuid
+  owner   User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  name        String
+  slug        String  @unique
+  category    String? // rubro, solo informativo / para la página pública
+  bio         String?
+  logoUrl     String?
+  coverUrl    String?
+
+  // Contacto / redes (para la página pública y el botón wa.me)
+  whatsappPhone String  @unique // E.164, UNIQUE global (anti-abuso)
+  publicEmail   String?
+  instagramUrl  String?
+  facebookUrl   String?
+  websiteUrl    String?
+  addressText   String?
+
+  timezone String @default("America/Argentina/Buenos_Aires")
+
+  // Reglas de agenda
+  slotGranularityMin  Int   @default(15) // paso de la grilla de horarios
+  minCancellationHours Int  @default(2)  // ventana mínima para cancelar sin penalidad
+  lateCancelPolicy    LateCancelPolicy @default(HALF_ABSENCE)
+  noShowThreshold     Int   @default(2)  // ausencias para bloquear al cliente
+  noShowBlockDays     Int   @default(30) // duración del bloqueo
+  reminderLeadMinutes Int[] @default([120, 1440]) // recordatorios: T-2h y T-24h
+
+  // Modo vacaciones "rápido" (además de TimeOff para bloqueos puntuales)
+  vacationUntil DateTime?
+
+  // Prueba gratuita basada en uso (pool único, no renovable)
+  freeBookingsQuota Int @default(50)
+  freeBookingsUsed  Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  professionals     Professional[]
+  services          Service[]
+  businessHours     BusinessHour[]
+  timeOff           TimeOff[]
+  holidays          Holiday[]
+  clients           Client[]
+  bookings          Booking[]
+  subscription      Subscription?
+  notifications     Notification[]
+  pushSubscriptions PushSubscription[]
+
+  @@map("businesses")
+}
+
+/// Horario semanal general del comercio. Puede haber varias filas por día
+/// (turnos partidos: 09:00–13:00 y 16:00–20:00). Sirve de default y para
+/// mostrar en la página pública; la disponibilidad real se calcula con
+/// los horarios del profesional (ProfessionalHour) si los tiene cargados.
+model BusinessHour {
+  id         String   @id @default(uuid()) @db.Uuid
+  businessId String   @db.Uuid
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  weekday     Int // 0=domingo .. 6=sábado
+  startMinute Int // minutos desde medianoche local
+  endMinute   Int
+
+  @@index([businessId])
+  @@map("business_hours")
+}
+
+// ===========================================================================
+// Profesional / "silla"
+// ===========================================================================
+
+model Professional {
+  id         String   @id @default(uuid()) @db.Uuid
+  businessId String   @db.Uuid
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  name      String
+  photoUrl  String?
+  bio       String?
+  active    Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workingHours ProfessionalHour[]
+  services     ProfessionalService[]
+  timeOff      TimeOff[]
+  bookings     Booking[]
+
+  @@index([businessId])
+  @@map("professionals")
+}
+
+/// Horario semanal propio del profesional. Si un profesional no tiene
+/// ninguna fila, se usa el horario del comercio (BusinessHour).
+model ProfessionalHour {
+  id             String       @id @default(uuid()) @db.Uuid
+  professionalId String       @db.Uuid
+  professional   Professional @relation(fields: [professionalId], references: [id], onDelete: Cascade)
+
+  weekday     Int
+  startMinute Int
+  endMinute   Int
+
+  @@index([professionalId])
+  @@map("professional_hours")
+}
+
+// ===========================================================================
+// Servicio
+// ===========================================================================
+
+model Service {
+  id         String   @id @default(uuid()) @db.Uuid
+  businessId String   @db.Uuid
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  name            String
+  description     String?
+  durationMin     Int
+  bufferBeforeMin Int      @default(0) // preparación antes del turno
+  bufferAfterMin  Int      @default(0) // limpieza / margen después
+  priceArs        Decimal? @db.Decimal(12, 2)
+  showPrice       Boolean  @default(true)
+  active          Boolean  @default(true)
+  sortOrder       Int      @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  professionals ProfessionalService[]
+  bookings      Booking[]
+
+  @@index([businessId])
+  @@map("services")
+}
+
+/// Qué profesional hace qué servicio (no todos hacen todo).
+model ProfessionalService {
+  professionalId String       @db.Uuid
+  professional   Professional @relation(fields: [professionalId], references: [id], onDelete: Cascade)
+  serviceId      String       @db.Uuid
+  service        Service      @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@id([professionalId, serviceId])
+  @@index([serviceId])
+  @@map("professional_services")
+}
+
+// ===========================================================================
+// Bloqueos de agenda / feriados
+// ===========================================================================
+
+/// Vacaciones y bloqueos puntuales. professionalId nulo = aplica a todo el
+/// comercio. Instantes en UTC.
+model TimeOff {
+  id             String        @id @default(uuid()) @db.Uuid
+  businessId     String        @db.Uuid
+  business       Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  professionalId String?       @db.Uuid
+  professional   Professional? @relation(fields: [professionalId], references: [id], onDelete: Cascade)
+
+  startAt DateTime
+  endAt   DateTime
+  reason  String?
+
+  createdAt DateTime @default(now())
+
+  @@index([businessId, startAt])
+  @@index([professionalId, startAt])
+  @@map("time_off")
+}
+
+/// Feriados. `works = true` => el comercio atiende ese día igual.
+model Holiday {
+  id         String   @id @default(uuid()) @db.Uuid
+  businessId String   @db.Uuid
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  date  DateTime @db.Date
+  works Boolean  @default(false)
+  label String?
+
+  @@unique([businessId, date])
+  @@map("holidays")
+}
+
+// ===========================================================================
+// Cliente final (sin cuenta)
+// ===========================================================================
+
+/// Identidad de cliente con alcance de comercio: (businessId, phone).
+/// No hay identidad global de cliente en el MVP.
+model Client {
+  id         String   @id @default(uuid()) @db.Uuid
+  businessId String   @db.Uuid
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  phone String // E.164
+  name  String
+  email String?
+  notes String?
+
+  noShowCount  Int       @default(0)
+  blockedUntil DateTime? // si > now(), no puede reservar en este comercio
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  bookings Booking[]
+
+  @@unique([businessId, phone])
+  @@index([businessId])
+  @@map("clients")
+}
+
+// ===========================================================================
+// Turno
+// ===========================================================================
+
+model Booking {
+  id         String   @id @default(uuid()) @db.Uuid
+  businessId String   @db.Uuid
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  professionalId String       @db.Uuid
+  professional   Professional @relation(fields: [professionalId], references: [id])
+
+  serviceId String  @db.Uuid
+  service   Service @relation(fields: [serviceId], references: [id])
+
+  clientId String @db.Uuid
+  client   Client @relation(fields: [clientId], references: [id])
+
+  // Instantes en UTC. [startAt, endAt) es el rango que ocupa la agenda
+  // (incluye los buffers del servicio).
+  startAt DateTime
+  endAt   DateTime
+
+  status BookingStatus @default(CONFIRMED)
+  source BookingSource @default(PUBLIC)
+
+  // Snapshots al momento de reservar (el historial no cambia si luego se
+  // edita el servicio o el nombre del cliente).
+  serviceName String
+  clientName  String
+  priceArs    Decimal? @db.Decimal(12, 2)
+
+  // Cancelación por link (token opaco, no expone el id).
+  cancelToken  String   @unique @default(cuid())
+  cancelledAt  DateTime?
+  cancelReason String?
+
+  // Recordatorios ya disparados (lead times en minutos que ya se enviaron).
+  sentReminderLeads Int[]    @default([])
+  markedNoShowAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([businessId, startAt])
+  @@index([professionalId, startAt])
+  @@index([clientId])
+  @@index([status])
+  @@map("bookings")
+}
+
+// ===========================================================================
+// Suscripción (Mercado Pago) + webhooks
+// ===========================================================================
+
+model Subscription {
+  id         String   @id @default(uuid()) @db.Uuid
+  businessId String   @unique @db.Uuid
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  status SubscriptionStatus @default(TRIALING)
+  plan   String             @default("base")
+
+  professionalsIncluded Int      @default(1)
+  priceArs              Decimal? @db.Decimal(12, 2)
+
+  mpPreapprovalId String? @unique // id de preapproval de Mercado Pago
+  mpPayerId       String?
+
+  currentPeriodEnd DateTime?
+  graceUntil       DateTime? // fin del período de gracia tras cobro rechazado
+  canceledAt       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("subscriptions")
+}
+
+/// Log de webhooks de Mercado Pago (idempotencia + panel de operador).
+model MpWebhookEvent {
+  id          String    @id @default(uuid()) @db.Uuid
+  type        String
+  mpId        String?
+  payload     Json
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+  error       String?
+
+  @@index([type])
+  @@index([mpId])
+  @@map("mp_webhook_events")
+}
+
+// ===========================================================================
+// Notificaciones al comerciante
+// ===========================================================================
+
+/// Centro de notificaciones in-app (la campanita del panel).
+model Notification {
+  id         String   @id @default(uuid()) @db.Uuid
+  businessId String   @db.Uuid
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  type   NotificationType
+  title  String
+  body   String
+  data   Json?
+  readAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([businessId, createdAt])
+  @@map("notifications")
+}
+
+/// Endpoints de Web Push (uno por dispositivo/navegador del comerciante).
+model PushSubscription {
+  id         String   @id @default(uuid()) @db.Uuid
+  businessId String   @db.Uuid
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  endpoint  String  @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+
+  createdAt   DateTime  @default(now())
+  lastUsedAt  DateTime?
+  failedCount Int       @default(0)
+
+  @@index([businessId])
+  @@map("push_subscriptions")
+}
+
+// ===========================================================================
+// Enums
+// ===========================================================================
+
+enum BookingStatus {
+  CONFIRMED
+  CANCELLED_BY_CLIENT
+  CANCELLED_BY_BUSINESS
+  COMPLETED
+  NO_SHOW
+}
+
+enum BookingSource {
+  PUBLIC // reservado desde la página pública
+  MANUAL // cargado por el comerciante
+}
+
+enum LateCancelPolicy {
+  NONE // cancelar tarde no penaliza
+  HALF_ABSENCE // cuenta como media ausencia
+  FULL_ABSENCE // cuenta como ausencia completa
+}
+
+enum SubscriptionStatus {
+  TRIALING // usando el pool de turnos gratis
+  ACTIVE
+  PAST_DUE // cobro rechazado, dentro del período de gracia
+  PAUSED
+  CANCELLED
+}
+
+enum NotificationType {
+  BOOKING_CREATED
+  BOOKING_CANCELLED_BY_CLIENT
+  BOOKING_NO_SHOW
+  CLIENT_BLOCKED
+  FREE_QUOTA_WARNING
+  FREE_QUOTA_REACHED
+  PAYMENT_FAILED
+  SUBSCRIPTION_EXPIRED
+}
