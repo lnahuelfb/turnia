@@ -2,7 +2,7 @@
 
 SaaS web para comerciantes/profesionales independientes en Argentina (muchos en la informalidad) que manejan turnos manualmente por WhatsApp. Turnia les da una página pública de reservas, un calendario configurable y confirmaciones automáticas, para que dejen de perder tiempo coordinando turnos a mano y de perder plata por ausencias.
 
-**Estado**: scaffold inicial. Repo git inicializado, proyecto Next.js (App Router) + Tailwind v4 armado a mano, `schema.prisma` completo con el modelo de datos del MVP. Falta: `npm install` (requiere Node 20+, todavía no instalado en la máquina), primera migración, y toda la lógica de negocio. Este archivo es la fuente de verdad del producto mientras se construye el MVP. Actualizar esta sección a medida que el proyecto avance.
+**Estado**: scaffold funcionando. Repo git, Next.js 15.5 (App Router) + Tailwind v4, `schema.prisma` completo, dependencias instaladas (Node 24), build de producción y typecheck OK. Falta: proyecto Supabase + primera migración (`npm run db:migrate`) + constraint de exclusión anti-solapamiento, y toda la lógica de negocio (empezando por el motor de disponibilidad). Este archivo es la fuente de verdad del producto mientras se construye el MVP. Actualizar esta sección a medida que el proyecto avance.
 
 ## El problema
 
