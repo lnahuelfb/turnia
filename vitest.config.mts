@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 export default defineConfig({
   resolve: {
@@ -7,7 +7,9 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    // Los `*.integration.test.ts` corren aparte (necesitan Postgres real).
     include: ["src/**/*.{test,spec}.ts"],
+    exclude: [...configDefaults.exclude, "**/*.integration.test.ts"],
     coverage: {
       provider: "v8",
       include: ["src/lib/**/*.ts"],
