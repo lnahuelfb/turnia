@@ -43,3 +43,46 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  integration:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: turnia_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/turnia_test
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/turnia_test
+      NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: dummy-anon-key
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Sincronizar schema
+        run: npx prisma db push --skip-generate --accept-data-loss
+
+      - name: Aplicar constraints SQL
+        run: npm run db:sql
+
+      - name: Tests de integración
+        run: npm run test:integration
