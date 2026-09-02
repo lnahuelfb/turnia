@@ -6,6 +6,7 @@ import type {
   PublicBusinessPage,
   PublicService,
 } from "@/lib/business/types";
+import { buildClientBookingMessage, buildWaMeUrl } from "@/lib/booking/whatsapp";
 import { formatArs, formatDuration } from "@/lib/format";
 import { isValidArPhone, normalizeArPhone } from "@/lib/phone";
 
@@ -18,11 +19,35 @@ interface Slot {
 
 type ProChoice = string | "any";
 
+interface BookingConfirmation {
+  bookingId: string;
+  cancelToken: string;
+  clientName: string;
+  professional: { id: string; name: string };
+  service: { name: string; durationMin: number; priceArs: string | null };
+  startAt: string;
+  endAt: string;
+  business: { name: string; slug: string; whatsappPhone: string; timezone: string };
+}
+
+const ERROR_MESSAGES: Record<string, string> = {
+  QUOTA_EXCEEDED:
+    "El comercio llegó a su límite de turnos online. Escribile directo por WhatsApp.",
+  SUBSCRIPTION_INACTIVE:
+    "El comercio no está tomando turnos online por ahora. Escribile por WhatsApp.",
+  CLIENT_BLOCKED: "No podés reservar en este comercio por el momento.",
+  IN_THE_PAST: "Ese horario ya pasó. Elegí otro.",
+  SERVICE_NOT_FOUND: "Ese servicio ya no está disponible.",
+  PROFESSIONAL_NOT_FOUND: "Ese profesional ya no está disponible.",
+  INVALID_INPUT: "Revisá los datos ingresados.",
+};
+
 export function BookingFlow({ business }: { business: PublicBusinessPage }) {
   const [serviceId, setServiceId] = useState<string | null>(null);
   const [proChoice, setProChoice] = useState<ProChoice | null>(null);
   const [dayIso, setDayIso] = useState<string | null>(null);
   const [slot, setSlot] = useState<Slot | null>(null);
+  const [confirmation, setConfirmation] = useState<BookingConfirmation | null>(null);
 
   const service = business.services.find((s) => s.id === serviceId) ?? null;
 
@@ -34,6 +59,10 @@ export function BookingFlow({ business }: { business: PublicBusinessPage }) {
   }, [service, business.professionals]);
 
   const days = useMemo(() => buildDays(business.timezone), [business.timezone]);
+
+  if (confirmation) {
+    return <Confirmation data={confirmation} />;
+  }
 
   function selectService(id: string) {
     setServiceId(id);
@@ -126,14 +155,16 @@ export function BookingFlow({ business }: { business: PublicBusinessPage }) {
         </Section>
       )}
 
-      {service && slot && (
+      {service && slot && proChoice && (
         <Section step={5} title="Tus datos">
           <BookingForm
             business={business}
             service={service}
-            proChoice={proChoice!}
+            proChoice={proChoice}
             eligiblePros={eligiblePros}
             slot={slot}
+            onConfirmed={setConfirmation}
+            onSlotGone={() => setSlot(null)}
           />
         </Section>
       )}
@@ -329,26 +360,71 @@ function BookingForm({
   proChoice,
   eligiblePros,
   slot,
+  onConfirmed,
+  onSlotGone,
 }: {
   business: PublicBusinessPage;
   service: PublicService;
   proChoice: ProChoice;
   eligiblePros: { id: string; name: string }[];
   slot: Slot;
+  onConfirmed: (data: BookingConfirmation) => void;
+  onSlotGone: () => void;
 }) {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [touchedPhone, setTouchedPhone] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const phoneOk = phone.trim() !== "" && isValidArPhone(phone);
-  const canSubmit = name.trim().length >= 2 && phoneOk;
+  const canSubmit = name.trim().length >= 2 && phoneOk && !submitting;
 
   const when = DateTime.fromISO(slot.start, { zone: business.timezone });
   const proName =
     proChoice === "any"
       ? "Cualquiera disponible"
       : (eligiblePros.find((p) => p.id === proChoice)?.name ?? "—");
+
+  async function submit() {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/${business.slug}/reservar`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          servicio: service.id,
+          profesional: proChoice === "any" ? null : proChoice,
+          inicio: slot.start,
+          cliente: {
+            nombre: name.trim(),
+            whatsapp: phone.trim(),
+            email: email.trim() || undefined,
+          },
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+
+      if (res.status === 201) {
+        onConfirmed(body as BookingConfirmation);
+        return;
+      }
+
+      setSubmitting(false);
+      const code = typeof body?.error === "string" ? body.error : "";
+      if (code === "SLOT_TAKEN" || code === "SLOT_UNAVAILABLE") {
+        setError("Ese horario se ocupó recién. Elegí otro, por favor.");
+        onSlotGone();
+      } else {
+        setError(ERROR_MESSAGES[code] ?? "No se pudo reservar. Probá de nuevo.");
+      }
+    } catch {
+      setSubmitting(false);
+      setError("No se pudo reservar. Revisá tu conexión y probá de nuevo.");
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -410,22 +486,95 @@ function BookingForm({
 
       <button
         type="button"
-        disabled
-        title="La confirmación de reservas todavía no está conectada"
-        className="w-full cursor-not-allowed rounded-lg bg-neutral-300 py-2.5 text-sm font-semibold text-white"
+        onClick={submit}
+        disabled={!canSubmit}
+        className="w-full rounded-lg bg-indigo-600 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:bg-neutral-300"
       >
-        Reservar turno
+        {submitting ? "Reservando…" : "Reservar turno"}
       </button>
-      <p className="text-center text-xs text-neutral-400">
-        {canSubmit
-          ? "Falta conectar el paso de confirmación (próximo release)."
-          : "Completá tu nombre y WhatsApp para continuar."}
-      </p>
-      {phone && phoneOk && (
+
+      {error && (
+        <p className="rounded-lg bg-red-50 px-3 py-2 text-center text-sm text-red-700">
+          {error}
+        </p>
+      )}
+
+      {!error && phone && phoneOk && (
         <p className="text-center text-xs text-neutral-400">
           Se guardará como <span className="font-mono">{safeNormalize(phone)}</span>
         </p>
       )}
+      {!canSubmit && !submitting && !error && (
+        <p className="text-center text-xs text-neutral-400">
+          Completá tu nombre y WhatsApp para continuar.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function Confirmation({ data }: { data: BookingConfirmation }) {
+  const when = DateTime.fromISO(data.startAt, { zone: data.business.timezone });
+  const whenLong = when.toFormat("cccc d 'de' LLLL", { locale: "es" });
+  const whenShort = when.toFormat("d 'de' LLLL 'a las' HH:mm", { locale: "es" });
+
+  const waUrl = buildWaMeUrl(
+    data.business.whatsappPhone,
+    buildClientBookingMessage({
+      clientName: data.clientName,
+      serviceName: data.service.name,
+      professionalName: data.professional.name,
+      whenText: whenShort,
+    }),
+  );
+
+  return (
+    <div className="mt-6 space-y-5">
+      <div className="text-center">
+        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100 text-2xl">
+          ✓
+        </div>
+        <h2 className="mt-3 text-lg font-bold">¡Turno confirmado!</h2>
+        <p className="mt-1 text-sm text-neutral-500">
+          Te esperamos el {whenLong} a las {when.toFormat("HH:mm")} h.
+        </p>
+      </div>
+
+      <div className="rounded-xl border border-neutral-200 bg-white p-3 text-sm">
+        <Row label="Servicio" value={data.service.name} />
+        <Row label="Profesional" value={data.professional.name} />
+        <Row
+          label="Cuándo"
+          value={when.toFormat("cccc d 'de' LLLL, HH:mm 'h'", { locale: "es" })}
+        />
+        {formatArs(data.service.priceArs) && (
+          <Row label="Precio" value={formatArs(data.service.priceArs)!} />
+        )}
+      </div>
+
+      <div className="space-y-2">
+        <a
+          href={waUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="block w-full rounded-lg bg-emerald-600 py-2.5 text-center text-sm font-semibold text-white hover:bg-emerald-700"
+        >
+          Avisarle al comercio por WhatsApp
+        </a>
+        <a
+          href={`/api/turnos/${data.cancelToken}/ics`}
+          className="block w-full rounded-lg border border-neutral-300 bg-white py-2.5 text-center text-sm font-semibold text-neutral-700 hover:border-neutral-400"
+        >
+          Agregar al calendario
+        </a>
+      </div>
+
+      <p className="text-center text-xs text-neutral-400">
+        ¿No podés ir?{" "}
+        <a href={`/cancelar/${data.cancelToken}`} className="underline">
+          Cancelar el turno
+        </a>
+      </p>
     </div>
   );
 }
