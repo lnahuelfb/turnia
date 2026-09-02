@@ -22,6 +22,7 @@ export interface CreateBookingInput {
 export interface CreateBookingResult {
   bookingId: string;
   cancelToken: string;
+  clientName: string;
   professional: { id: string; name: string };
   service: { name: string; durationMin: number; priceArs: string | null };
   startAt: string;
@@ -238,6 +239,7 @@ async function runBooking(
   return {
     bookingId: booking.id,
     cancelToken: booking.cancelToken,
+    clientName: input.name,
     professional: { id: chosen.professionalId, name: chosen.professional.name },
     service: {
       name: service.name,
