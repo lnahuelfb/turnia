@@ -2,7 +2,7 @@
 
 SaaS web para comerciantes/profesionales independientes en Argentina (muchos en la informalidad) que manejan turnos manualmente por WhatsApp. Turnia les da una página pública de reservas, un calendario configurable y confirmaciones automáticas, para que dejen de perder tiempo coordinando turnos a mano y de perder plata por ausencias.
 
-**Estado**: scaffold funcionando. Repo git, Next.js 15.5 (App Router) + Tailwind v4, `schema.prisma` completo, dependencias instaladas (Node 24), build de producción y typecheck OK. Falta: proyecto Supabase + primera migración (`npm run db:migrate`) + constraint de exclusión anti-solapamiento, y toda la lógica de negocio (empezando por el motor de disponibilidad). Este archivo es la fuente de verdad del producto mientras se construye el MVP. Actualizar esta sección a medida que el proyecto avance.
+**Estado**: base lista. Repo git, Next.js 15.5 (App Router) + Tailwind v4, `schema.prisma` completo. Supabase (proyecto en São Paulo) con schema sincronizado (`db push`), constraint anti-solapamiento aplicado y seed de demo cargado (`/peluqueria-demo`). Clientes Supabase (browser/server/admin) + middleware de sesión listos. Falta: Auth (magic link + Google) end-to-end, políticas RLS para Realtime, y toda la lógica de negocio (empezando por el motor de disponibilidad). Este archivo es la fuente de verdad del producto mientras se construye el MVP. Actualizar esta sección a medida que el proyecto avance.
 
 ## El problema
 
@@ -167,7 +167,9 @@ Convenciones adicionales se documentan acá a medida que aparecen.
 ## Consideraciones técnicas clave
 
 - **Fecha/hora**: guardar todo en UTC en la base; renderizar en `America/Argentina/Buenos_Aires`. Argentina hoy es UTC-3 fijo, sin horario de verano — no complica, pero no hardcodear el offset.
-- **Doble-reserva**: no alcanza un unique constraint (los turnos tienen duración y se solapan). Usar `EXCLUDE USING gist` sobre `(professional_id WITH =, tstzrange(inicio, fin) WITH &&)` en Postgres, o transacción serializable + lock. El chequeo de disponibilidad y el insert van juntos.
+- **Doble-reserva**: no alcanza un unique constraint (los turnos tienen duración y se solapan). Ya está aplicada la restricción `EXCLUDE USING gist` sobre `("professionalId" WITH =, tsrange("startAt","endAt",'[)') WITH &&)` filtrada por estados activos — ver `prisma/sql/001_booking_no_overlap.sql`. El chequeo de disponibilidad y el insert van en la misma transacción; el constraint es la red de seguridad.
+- **Schema en Supabase**: se sincroniza con `prisma db push` (Supabase no deja crear la shadow DB de `prisma migrate dev`). Los constraints/extensiones que Prisma no genera van en `prisma/sql/*.sql` (`npm run db:sql`, idempotentes). Pasar a migraciones versionadas cuando el modelo se estabilice.
+- **Columnas de fecha**: Prisma mapea `DateTime` a `timestamp(3)` sin timezone. Todo se guarda en UTC por convención (por eso el constraint usa `tsrange`, no `tstzrange`). Evaluar migrar a `@db.Timestamptz` antes de producción.
 - **Motor de disponibilidad**: es la lógica más delicada del producto. Entradas: franja del profesional, duración del servicio, buffer/preparación entre turnos (configurable), turnos ocupados, bloqueos puntuales, vacaciones, feriados. Debe tener cobertura de tests alta y aislada del framework.
 - **"Cualquiera disponible"**: al reservar sin elegir profesional, asignar al que tenga el hueco (candidato: menos cargado ese día; definir).
 - **Normalización de teléfono**: guardar en E.164 (`+549...`). Los celulares argentinos con el `9` y el `15` son un lío — normalizar en un solo lugar al ingresar.
