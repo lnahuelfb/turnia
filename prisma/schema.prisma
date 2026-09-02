@@ -293,8 +293,10 @@ model Booking {
   clientId String @db.Uuid
   client   Client @relation(fields: [clientId], references: [id])
 
-  // Instantes en UTC. [startAt, endAt) es el rango que ocupa la agenda
-  // (incluye los buffers del servicio).
+  // Instantes en UTC. [startAt, endAt) es el turno REAL (endAt = startAt +
+  // durationMin del servicio). Los buffers NO se guardan acá: el motor de
+  // disponibilidad los aplica en vivo alrededor del candidato. El constraint
+  // EXCLUDE de la base protege el solapamiento literal de [startAt, endAt).
   startAt DateTime
   endAt   DateTime
 
