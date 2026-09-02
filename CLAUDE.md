@@ -2,7 +2,7 @@
 
 SaaS web para comerciantes/profesionales independientes en Argentina (muchos en la informalidad) que manejan turnos manualmente por WhatsApp. Turnia les da una página pública de reservas, un calendario configurable y confirmaciones automáticas, para que dejen de perder tiempo coordinando turnos a mano y de perder plata por ausencias.
 
-**Estado**: base lista. Repo git, Next.js 15.5 (App Router) + Tailwind v4, `schema.prisma` completo. Supabase (proyecto en São Paulo) con schema sincronizado (`db push`), constraint anti-solapamiento aplicado y seed de demo cargado (`/peluqueria-demo`). Clientes Supabase (browser/server/admin) + middleware de sesión listos. Falta: Auth (magic link + Google) end-to-end, políticas RLS para Realtime, y toda la lógica de negocio (empezando por el motor de disponibilidad). Este archivo es la fuente de verdad del producto mientras se construye el MVP. Actualizar esta sección a medida que el proyecto avance.
+**Estado**: base + tooling listos. Repo git en GitHub (`lnahuelfb/turnia`, se trabaja por PR contra `main`), Next.js 15.5 (App Router) + Tailwind v4, `schema.prisma` completo. Supabase (São Paulo) con schema sincronizado (`db push`), constraint anti-solapamiento aplicado y seed de demo (`/peluqueria-demo`). Clientes Supabase (browser/server/admin) + middleware de sesión. Vitest + CI (GitHub Actions) andando; primer helper con tests: `src/lib/phone.ts` (normalización E.164 AR). Falta: Auth (magic link + Google) end-to-end, políticas RLS para Realtime, y toda la lógica de negocio (empezando por el motor de disponibilidad). Este archivo es la fuente de verdad del producto mientras se construye el MVP. Actualizar esta sección a medida que el proyecto avance.
 
 ## El problema
 
@@ -150,7 +150,9 @@ src/
   components/
 prisma/
   schema.prisma   # modelo de datos (fuente de verdad del schema)
+  sql/            # constraints/extensiones que Prisma no genera
   seed.ts
+.github/workflows/ # CI
 public/
 ```
 
@@ -158,9 +160,16 @@ public/
 
 - Instantes en UTC en la base; convertir a `America/Argentina/Buenos_Aires` solo en el borde (render / parsing de input del usuario).
 - Horarios semanales recurrentes: minutos desde medianoche local + `weekday` (0=domingo … 6=sábado).
-- Teléfonos en E.164 (`+549…`), normalizados en un único helper al ingresar.
+- Teléfonos en E.164 (`+549…`): normalizar SIEMPRE con `normalizeArPhone()` de `src/lib/phone.ts` al ingresar. Un número AR de 10 dígitos sin marca de celular se asume celular.
 - Nombres de modelos Prisma en inglés singular (`Business`, `Booking`); tablas mapeadas a `snake_case` plural con `@@map`.
-- El motor de disponibilidad vive en `src/lib` puro (sin dependencias de Next), con tests.
+- Lógica de dominio (motor de disponibilidad, etc.) en `src/lib` puro, sin imports de Next, con tests al lado (`foo.ts` → `foo.test.ts`).
+
+### Tests y CI
+
+- **Vitest** para lógica pura. `npm test` / `test:watch` / `test:coverage`.
+- **GitHub Actions** en cada PR y push a `main`: `typecheck → lint → test → build`. `main` protegida, no se mergea sin CI verde.
+- Lint es `eslint .` (CLI directo, flat config) — ya no `next lint`.
+- Integración contra Postgres (transacción de reserva + `EXCLUDE`): service container cuando exista esa lógica.
 
 Convenciones adicionales se documentan acá a medida que aparecen.
 
