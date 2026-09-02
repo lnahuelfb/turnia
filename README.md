@@ -21,26 +21,27 @@ Luego, en la raíz del proyecto:
 ```bash
 npm install
 cp .env.example .env   # y completar los valores (lo leen Next.js y Prisma)
-npm run db:migrate     # crea el schema en la base de Supabase
+npm run db:push        # sincroniza el schema con la base de Supabase
+npm run db:sql         # aplica los .sql de prisma/sql/ (constraints, etc.)
 npm run db:seed        # datos de ejemplo (opcional)
 npm run dev
 ```
 
 App en http://localhost:3000
 
-### Restricción anti-solapamiento (manual)
+### Schema: `db push` vs migraciones
 
-Prisma no genera restricciones de exclusión. Después de la primera migración,
-agregar una migración SQL con:
+Mientras el schema está en movimiento (pre-launch) usamos **`prisma db push`**:
+Supabase no permite crear la shadow database que necesita `prisma migrate dev`.
+Cuando el modelo se estabilice, se pasa a migraciones versionadas (con una
+Postgres local o una base shadow dedicada) + `prisma migrate deploy` en CI.
 
-```sql
-CREATE EXTENSION IF NOT EXISTS btree_gist;
-ALTER TABLE "bookings" ADD CONSTRAINT booking_no_overlap
-  EXCLUDE USING gist (
-    "professionalId" WITH =,
-    tstzrange("startAt", "endAt", '[)') WITH &&
-  ) WHERE ("status" IN ('CONFIRMED', 'COMPLETED', 'NO_SHOW'));
-```
+### Restricción anti-solapamiento
+
+`prisma db push` no crea constraints de exclusión. Vive en
+[`prisma/sql/001_booking_no_overlap.sql`](./prisma/sql/001_booking_no_overlap.sql)
+y se aplica con `npm run db:sql` (idempotente). Impide que un profesional
+tenga dos turnos activos que se pisen.
 
 ### Claves VAPID para Web Push
 
@@ -54,8 +55,9 @@ npx web-push generate-vapid-keys
 | --- | --- |
 | `npm run dev` | Servidor de desarrollo |
 | `npm run build` | `prisma generate` + build de producción |
-| `npm run db:migrate` | Migración de desarrollo |
-| `npm run db:deploy` | Aplica migraciones (producción / CI) |
+| `npm run db:push` | Sincroniza el schema con la base (sin migraciones) |
+| `npm run db:sql` | Aplica los `.sql` de `prisma/sql/` |
 | `npm run db:studio` | Prisma Studio |
 | `npm run db:seed` | Carga datos de ejemplo |
+| `npm run db:migrate` | Migración versionada (aún no en uso, ver arriba) |
 | `npm run lint` | ESLint |
