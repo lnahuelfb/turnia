@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export default function Home() {
   return (
     <main className="mx-auto flex min-h-dvh max-w-2xl flex-col justify-center gap-6 px-6 py-16">
@@ -12,6 +14,21 @@ export default function Home() {
         automáticas. Para peluquerías, manicura, consultorios, veterinarias y
         cualquier negocio que trabaje con turnos.
       </p>
+      <div className="flex flex-wrap gap-3">
+        <Link
+          href="/login"
+          className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
+        >
+          Ingresá al panel
+        </Link>
+        <Link
+          href="/peluqueria-demo"
+          className="rounded-lg border border-neutral-300 px-4 py-2 text-sm font-semibold text-neutral-700 hover:border-neutral-400 dark:border-neutral-700 dark:text-neutral-300"
+        >
+          Ver una página de ejemplo
+        </Link>
+      </div>
+
       <p className="text-sm text-neutral-500">
         Proyecto en construcción — ver <code>CLAUDE.md</code> para el alcance del MVP.
       </p>
